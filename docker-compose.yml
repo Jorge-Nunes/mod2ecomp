@@ -1,0 +1,141 @@
+version: "3.7"
+
+services:
+
+  mysqldb:
+    image: mysql:8.0.21
+    command: --default-authentication-plugin=mysql_native_password
+    restart: always
+    ports:
+      - 3306:3306
+    environment:
+      MYSQL_DATABASE: "${DATABASE}"
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: "${DBUSER}"
+      MYSQL_PASSWORD: "${DBPASS}"
+    volumes:
+      - ./my-custom.cnf:/etc/mysql/conf.d
+      - datadir:/var/lib/mysql   
+    healthcheck:
+      test: ["CMD", "mysqladmin" ,"ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  traefik:
+    image: "traefik:latest"
+    container_name: "traefik"
+    restart: always
+    command:
+      - "--log.level=DEBUG"
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      #- "--certificatesresolvers.myresolver.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.myresolver.acme.email=jcvn@jcvn.com.br"
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json"
+      # Redirect http to https
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+      - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - "./letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+    
+# =============================================================
+#	2ecomp Mod 4.13
+# =============================================================
+
+  traccar:
+    build: .
+    #image: jcvn/mod2ecomp:${MOD_VERSION}
+    depends_on:
+      mysqldb: 
+        condition: service_healthy
+    container_name: traccar
+    restart: always
+    ulimits:
+      #nproc: 65535
+      nofile:
+        soft: 50000
+        hard: 50000
+    sysctls:
+      net.core.somaxconn: 1024
+      net.ipv4.tcp_syncookies: 0
+      #vm.max_map_count: 250000  => o CT ja possui um valor de 262144
+      #fs.file-max: 250000       => O CT ja possui um valor de 9223372036854775807
+      net.ipv4.ip_local_port_range: 1024 65535
+    volumes:
+      - ./traccar_conf/traccar.xml:/opt/traccar/conf/traccar.xml
+      - traccar:/opt/traccar  
+    ports:
+      - "5000-5150:5000-5150"
+      #- "8082:8082"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traccar.rule=Host(`${DOMAIN_CLIENT}`)"
+      - "traefik.http.routers.traccar.entrypoints=websecure"
+      - "traefik.http.routers.traccar.priority=1"
+      - "traefik.http.routers.traccar.tls.certresolver=myresolver"
+      - "traefik.http.routers.traccar.service=traccar"
+      - "traefik.http.services.traccar.loadbalancer.server.port=8082"      
+
+# =============================================================
+#	PORTAINER
+# =============================================================
+
+  portainer:
+    image: portainer/portainer
+    container_name: portainer
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels:
+      #	HTTPS traffic
+      - "traefik.enable=true"
+      - "traefik.http.routers.portainer.rule=Host(`p2ecomp.trackandtrace.dedyn.io`)"
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.routers.portainer.tls.certresolver=myresolver"
+      - "traefik.http.routers.portainer.service=portainer"
+      - "traefik.http.services.portainer.loadBalancer.server.port=9000"
+
+# =============================================================
+#       API-EVOLUTION
+# =============================================================
+
+  evolution-api:
+    image: atendai/evolution-api
+    container_name: evolution_api
+    restart: always
+    ports:
+      - "8081:8080"
+    volumes:
+      - evolution_store:/evolution/store
+      - evolution_instances:/evolution/instances
+    env_file:
+      - .env
+    command: ["node", "./dist/src/main.js"]
+    expose:
+      - 8080
+    labels:
+      # HTTPS traffic
+      - "traefik.enable=true"
+      - "traefik.http.routers.evolution_api.rule=Host(`${DOMAIN_EVOLUTION}`)"
+      - "traefik.http.routers.evolution_api.entrypoints=websecure"
+      - "traefik.http.routers.evolution_api.tls.certresolver=myresolver"
+      - "traefik.http.routers.evolution_api.service=evolution_api"
+      - "traefik.http.services.evolution_api.loadBalancer.server.port=8080"  
+
+volumes:
+  evolution_store:
+  evolution_instances:
+  traccar:  
+  datadir:

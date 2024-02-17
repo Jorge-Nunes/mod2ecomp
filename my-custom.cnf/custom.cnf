@@ -1,0 +1,8 @@
+[mysqld]
+innodb_buffer_pool_size = 512M
+innodb_log_file_size = 512M
+innodb_flush_method = O_DIRECT
+innodb_flush_log_at_trx_commit = 0
+innodb_strict_mode=0
+max_allowed_packet=1G
+net_buffer_length=100K
